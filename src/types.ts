@@ -312,3 +312,68 @@ export interface RepairSearchResult {
    */
   observationConflict: boolean
 }
+
+/**
+ * 先后关系问询的结论（三值）：
+ * - necessary：断言「B 至少比 A 晚 k 分钟」在全案卷下必然成立（其否定不可行）；
+ * - possible：断言与其否定均可行（可能但非必然）；
+ * - impossible：断言在全案卷下不可能成立（必然不成立，其否定必然成立）。
+ */
+export type OrderingVerdict = 'necessary' | 'possible' | 'impossible'
+
+/**
+ * 先后关系问询中一个可行分支的一份事件时间赋值：
+ * 全部事件（事件下标即数组下标）都给出相对时间原点 t0 的整数分钟偏移；
+ * 有观测时 t0 锚定到 baseISO，偏移即绝对时间；
+ * 无观测时 t0 是自由平移的内部原点（baseISO = null），展示时统一平移到 A=0。
+ */
+export interface OrderingAssignment {
+  /** 事件下标 -> 相对内部时间原点的分钟偏移（可行势，整数） */
+  offsets: number[]
+  /** 归一化为 t_A = 0 的分钟偏移（无观测时以此展示相对分钟；有观测时一并供核对） */
+  relativeToA: number[]
+  /** 本赋值中 B − A 的实际分钟差（即 relativeToA[bIdx]） */
+  diffMin: number
+}
+
+/**
+ * 先后关系问询结果（只读计算：不写入案卷或本地存储）。
+ *
+ * 接入原案卷的事件、启用证词（相对约束）与全部绝对时间观测，
+ * 不采用修复预览的临时停用结果。t_B − t_A 的最紧可行区间为 [lower, upper]
+ *（整数分钟，允许负数；null 分别表示 −∞ / +∞）：
+ *   upper = A → B 的最短路，lower = −(B → A 的最短路)。
+ * 断言 P：t_B − t_A ≥ k 与否定 ¬P：t_B − t_A ≤ k−1 分别作为一条附加差分边
+ * 并入同一差分系统做负环检测；每个可行分支给出一份满足全案卷的全部事件
+ * 时间赋值（可行势）。案卷矛盾时问询暂停（不返回本结果）。
+ */
+export interface OrderingQueryResult {
+  /** 事件 A 的下标 */
+  aIdx: number
+  /** 事件 B 的下标 */
+  bIdx: number
+  /** 查询参数 k（非负整数分钟） */
+  k: number
+  /** t_B − t_A 最紧可行区间的下界；不可达为 null（−∞） */
+  lower: number | null
+  /** t_B − t_A 最紧可行区间的上界；不可达为 null（+∞） */
+  upper: number | null
+  /** 三值结论 */
+  verdict: OrderingVerdict
+  /** 断言 P（t_B − t_A ≥ k）可行时的一个分支及见证赋值；不可行为 null */
+  positive: OrderingBranch | null
+  /** 否定 ¬P（t_B − t_A ≤ k−1）可行时的一个分支及见证赋值；不可行为 null（k=0 时要求 B 至少早 A 1 分钟，是否可行仍取决于案卷） */
+  negative: OrderingBranch | null
+  /** 时间原点对应的真实时刻；无任何有效观测为 null（展示相对分钟，A=0） */
+  baseISO: string | null
+  /** 各事件是否与时间原点（任何观测）连通：未连通事件的绝对时刻不可定位 */
+  connected: boolean[]
+}
+
+/** 一个可行分支（P 或 ¬P）：附加不等式与一份满足全案卷的时间赋值 */
+export interface OrderingBranch {
+  /** 本分支附加的差分不等式（自然语言，含 k−1 = −1 时的边界情形说明） */
+  addedInequality: string
+  /** 一份满足全案卷（全部启用证词 + 全部观测）与本分支附加断言的时间赋值 */
+  assignment: OrderingAssignment
+}

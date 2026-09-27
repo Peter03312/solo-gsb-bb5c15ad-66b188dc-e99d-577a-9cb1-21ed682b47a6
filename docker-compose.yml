@@ -6,6 +6,6 @@ services:
     image: temporal-constraint-checker:latest
     container_name: temporal-constraint-checker
     ports:
-      # 宿主机端口:容器端口。如 8080 被占用，可修改左侧端口
-      - "8080:80"
+      # 宿主机端口:容器端口。容器内固定监听 8080；如宿主机 8080 被占用，可修改左侧端口
+      - "8080:8080"
     restart: unless-stopped

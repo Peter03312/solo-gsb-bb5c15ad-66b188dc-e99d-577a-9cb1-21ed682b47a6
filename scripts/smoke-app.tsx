@@ -13,9 +13,11 @@ import ObservationEditor from '../src/components/ObservationEditor'
 import AuditPanel from '../src/components/AuditPanel'
 import SnapshotPanel from '../src/components/SnapshotPanel'
 import SlackPanel, { SlackResultView } from '../src/components/SlackPanel'
+import OrderingPanel, { OrderingResultView } from '../src/components/OrderingPanel'
 import { analyze, traceBound } from '../src/lib/graph'
 import { auditRedundancy } from '../src/lib/audit'
 import { computeUniformSlack } from '../src/lib/slack'
+import { queryOrdering } from '../src/lib/ordering'
 import { buildConsistentSample, buildContradictionSample } from '../src/lib/samples'
 
 let failed = 0
@@ -68,6 +70,13 @@ check(appHtml, '仅必要', '冗余证词审计筛选')
 check(appHtml, '不改写约束与本地存档', '冗余证词审计')
 check(appHtml, '+10 ~ +25 分钟', '冗余证词审计：整体约束推导区间')
 check(appHtml, '−12 ~ +12 分钟', '冗余证词审计：首条约束推导区间')
+
+// 1c2) 先后关系问询（App 内渲染输入区：事件 A/B、k、开始问询、只读说明）
+check(appHtml, '先后关系问询', '先后关系问询')
+check(appHtml, 'B 至少比 A 晚', '先后关系问询：查询语义')
+check(appHtml, '不采用修复预览的临时停用', '先后关系问询：口径说明')
+check(appHtml, '开始问询', '先后关系问询：触发按钮')
+check(appHtml, '最紧区间', '先后关系问询：结果术语（输入区描述）')
 
 // 1d) 观测编辑器可独立渲染
 const s0 = buildConsistentSample()
@@ -260,6 +269,82 @@ const slackNoObs = {
 }
 const slackNoObsHtml = renderToString(h(SlackResultView, { run: slackNoObs }))
 check(slackNoObsHtml, '无法定时', '宽限：无观测标注无法定时')
+
+// 6) 先后关系问询面板与三种结论视图（必然 / 可能但非必然 / 不可能）
+//    两事件 + B 比 A 晚 10~20 分钟；有观测时显示绝对时间
+const ordEvents = [
+  { id: 'a', name: 'A：驶入' },
+  { id: 'b', name: 'B：刹车' },
+]
+const ordConstraints = [
+  { id: 'c1', aId: 'a', bId: 'b', relation: 'earlier' as const, min: 10, max: 20, enabled: true },
+]
+const ordPanelHtml = renderToString(
+  h(OrderingPanel, {
+    events: ordEvents,
+    constraints: ordConstraints,
+    observations: [],
+    satisfiable: true,
+  }),
+)
+check(ordPanelHtml, '先后关系问询', '问询面板')
+check(ordPanelHtml, '事件 A', '问询面板：A 选择')
+check(ordPanelHtml, '事件 B', '问询面板：B 选择')
+check(ordPanelHtml, '非负整数', '问询面板：k 说明')
+
+// 必然成立：k=10（有观测 → 显示绝对时间）
+const ordObs = [
+  { id: 'o1', eventId: 'a', start: '2026-01-01T08:00', end: '2026-01-01T08:00' },
+]
+{
+  const result = queryOrdering(ordEvents, ordConstraints, ordObs, 0, 1, 10)!
+  const html = renderToString(
+    h(OrderingResultView, { run: { events: ordEvents, constraints: ordConstraints, observations: ordObs, aId: 'a', bId: 'b', k: 10, result } }),
+  )
+  check(html, '必然成立', '问询结果：必然')
+  check(html, '最紧可行区间', '问询结果：区间标题')
+  check(html, '正例（断言成立）', '问询结果：正例分支')
+  check(html, '绝对时间（可行示例）', '问询结果：有观测显示绝对时间')
+  check(html, '01-01 08:10', '问询结果：正例 B 的绝对时间')
+  check(html, '仅为一份可行示例', '问询结果：可行示例标注')
+  check(html, '不写入案卷或浏览器本地存储', '问询结果：只读说明')
+}
+
+// 可能但非必然：k=15（无观测 → A=0 相对分钟，正例与反例同时给出）
+{
+  const result = queryOrdering(ordEvents, ordConstraints, [], 0, 1, 15)!
+  const html = renderToString(
+    h(OrderingResultView, { run: { events: ordEvents, constraints: ordConstraints, observations: [], aId: 'a', bId: 'b', k: 15, result } }),
+  )
+  check(html, '可能但非必然', '问询结果：可能')
+  check(html, '正例（断言成立）', '问询结果：正例')
+  check(html, '反例（断言不成立）', '问询结果：反例')
+  check(html, 'A = 0', '问询结果：无观测 A=0')
+  check(html, '两种安排都存在', '问询结果：跨阈值说明')
+}
+
+// 不可能成立：k=21
+{
+  const result = queryOrdering(ordEvents, ordConstraints, [], 0, 1, 21)!
+  const html = renderToString(
+    h(OrderingResultView, { run: { events: ordEvents, constraints: ordConstraints, observations: [], aId: 'a', bId: 'b', k: 21, result } }),
+  )
+  check(html, '不可能成立', '问询结果：不可能')
+  check(html, '反例（断言不成立）', '问询结果：仅反例')
+}
+
+// 案卷矛盾时面板暂停问询
+{
+  const html = renderToString(
+    h(OrderingPanel, {
+      events: bad.events,
+      constraints: bad.constraints,
+      observations: bad.observations,
+      satisfiable: false,
+    }),
+  )
+  check(html, '先后关系问询已暂停', '问询面板：矛盾暂停')
+}
 
 if (failed > 0) process.exit(1)
 console.log('smoke ok')

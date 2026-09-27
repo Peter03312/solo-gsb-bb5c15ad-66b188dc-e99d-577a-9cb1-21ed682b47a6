@@ -3,6 +3,7 @@ import { auditRedundancy } from '../src/lib/audit'
 import { DEFAULT_STATE_LIMIT, findMinimalRepairs, MAX_PLANS } from '../src/lib/repair'
 import { computeMinDeviationSchedule } from '../src/lib/schedule'
 import { computeUniformSlack, relaxConstraints } from '../src/lib/slack'
+import { queryOrdering } from '../src/lib/ordering'
 import { buildConsistentSample, buildContradictionSample, emptyState } from '../src/lib/samples'
 import { migrateState } from '../src/lib/storage'
 import { buildImportEntities, parseDsl } from '../src/lib/dsl'
@@ -1732,6 +1733,174 @@ function canon(v: unknown): string {
   computeUniformSlack(s.events, s.constraints, s.observations, 30)
   computeUniformSlack(s.events, s.constraints, s.observations, 5)
   assert(JSON.stringify(s) === before, '宽限：分析不修改案卷数据')
+}
+
+// ---- 先后关系问询：必然成立（区间下界即阈值）----
+{
+  // B 比 A 晚 10~20 分钟：d = t_B − t_A ∈ [10, 20]
+  const events: TEvent[] = [{ id: 'a', name: 'A' }, { id: 'b', name: 'B' }]
+  const cs: Constraint[] = [
+    { id: 'c1', aId: 'a', bId: 'b', relation: 'earlier', min: 10, max: 20, enabled: true },
+  ]
+  const r10 = queryOrdering(events, cs, [], 0, 1, 10)!
+  assert(r10 !== null, '问询：可满足案卷返回结果')
+  assert(r10.lower === 10 && r10.upper === 20, '问询：最紧区间 [10, 20]')
+  assert(r10.verdict === 'necessary', '问询：k=10 必然成立')
+  assert(r10.positive !== null && r10.negative === null, '问询：k=10 仅正例可行')
+  assert(r10.positive!.assignment.diffMin === 10, '问询：正例赋值 B−A=10（紧下界见证）')
+  assert(r10.baseISO === null, '问询：无观测时无基准')
+  assert(r10.positive!.assignment.relativeToA[0] === 0, '问询：无观测时相对列 A=0')
+  assert(r10.positive!.assignment.relativeToA[1] === 10, '问询：无观测时相对列 B=+10')
+}
+
+// ---- 先后关系问询：可能但非必然（正例与反例同时给出）----
+{
+  const events: TEvent[] = [{ id: 'a', name: 'A' }, { id: 'b', name: 'B' }]
+  const cs: Constraint[] = [
+    { id: 'c1', aId: 'a', bId: 'b', relation: 'earlier', min: 10, max: 20, enabled: true },
+  ]
+  const r15 = queryOrdering(events, cs, [], 0, 1, 15)!
+  assert(r15.verdict === 'possible', '问询：k=15 可能但非必然')
+  assert(r15.positive !== null && r15.negative !== null, '问询：k=15 正反例都存在')
+  // 见证赋值只需满足对应分支不等式（可行势不必恰好贴紧问询边）
+  assert(r15.positive!.assignment.diffMin >= 15, '问询：正例差 ≥ k')
+  assert(r15.negative!.assignment.diffMin <= 14, '问询：反例差 ≤ k−1')
+  // 同时仍在原案卷最紧区间 [10, 20] 内
+  assert(r15.positive!.assignment.diffMin <= 20 && r15.negative!.assignment.diffMin >= 10, '问询：见证差落在最紧区间内')
+  // 赋值覆盖全部事件
+  assert(r15.positive!.assignment.offsets.length === 2, '问询：见证赋值覆盖全部事件')
+}
+
+// ---- 先后关系问询：不可能成立（区间上界即阈值边界）----
+{
+  const events: TEvent[] = [{ id: 'a', name: 'A' }, { id: 'b', name: 'B' }]
+  const cs: Constraint[] = [
+    { id: 'c1', aId: 'a', bId: 'b', relation: 'earlier', min: 10, max: 20, enabled: true },
+  ]
+  const r21 = queryOrdering(events, cs, [], 0, 1, 21)!
+  assert(r21.verdict === 'impossible', '问询：k=21 不可能成立')
+  assert(r21.positive === null && r21.negative !== null, '问询：k=21 仅否定可行')
+  assert(r21.negative!.assignment.diffMin <= 20 && r21.negative!.assignment.diffMin >= 10, '问询：反例差在区间 [10,20] 内（< k）')
+}
+
+// ---- 先后关系问询：无约束时区间 (−∞, +∞)，k=0 也可能但非必然（允许 B 早于 A）----
+{
+  const events: TEvent[] = [{ id: 'a', name: 'A' }, { id: 'b', name: 'B' }]
+  const r0 = queryOrdering(events, [], [], 0, 1, 0)!
+  assert(r0.lower === null && r0.upper === null, '问询：无约束区间 (−∞, +∞)')
+  assert(r0.verdict === 'possible', '问询：无约束时 k=0 可能但非必然（否定要求 B−A ≤ −1）')
+  assert(r0.positive !== null && r0.negative !== null, '问询：k=0 正反例都存在')
+  assert(r0.negative!.assignment.diffMin === -1, '问询：k=0 反例差 −1（B 早于 A）')
+  assert(r0.positive!.assignment.diffMin === 0, '问询：k=0 正例差 0')
+}
+
+// ---- 先后关系问询：链式约束最紧区间（10~15 → 15~35）----
+{
+  const events: TEvent[] = [
+    { id: 'a', name: 'A' },
+    { id: 'x', name: 'X' },
+    { id: 'b', name: 'B' },
+  ]
+  const cs: Constraint[] = [
+    { id: 'c1', aId: 'a', bId: 'x', relation: 'earlier', min: 10, max: 15, enabled: true },
+    { id: 'c2', aId: 'x', bId: 'b', relation: 'earlier', min: 5, max: 20, enabled: true },
+  ]
+  const r = queryOrdering(events, cs, [], 0, 2, 20)!
+  assert(r.lower === 15 && r.upper === 35, '问询：链式约束区间 [15, 35]')
+  assert(r.verdict === 'possible', '问询：链上 k=20 可能但非必然')
+  assert(r.positive!.assignment.offsets.length === 3, '问询：三事件均给出赋值')
+}
+
+// ---- 先后关系问询：下界为 0 的约束（t_B − t_A ∈ [0, 5]）----
+{
+  const events: TEvent[] = [{ id: 'a', name: 'A' }, { id: 'b', name: 'B' }]
+  const cs: Constraint[] = [
+    { id: 'c1', aId: 'a', bId: 'b', relation: 'earlier', min: 0, max: 5, enabled: true },
+  ]
+  const r = queryOrdering(events, cs, [], 0, 1, 3)!
+  assert(r.lower === 0 && r.upper === 5, '问询：区间 [0, 5]')
+  assert(r.verdict === 'possible', '问询：下界为 0 时 k=3 可能但非必然')
+  assert(r.negative !== null && r.negative!.assignment.diffMin <= 2, '问询：反例存在且差 ≤ 2')
+  const r6 = queryOrdering(events, cs, [], 0, 1, 6)!
+  assert(r6.verdict === 'impossible', '问询：超过上界 k=6 不可能')
+  // k=0：差的下界就是 0，故「至少晚 0 分钟」必然成立（否定要求差 ≤ −1，不可行）
+  const r0 = queryOrdering(events, cs, [], 0, 1, 0)!
+  assert(r0.verdict === 'necessary', '问询：下界 0 时 k=0 必然成立')
+  assert(r0.negative === null, '问询：k=0 否定（B 早于 A）不可行')
+}
+
+// ---- 先后关系问询：接入全部观测，有观测时给绝对时间基准 ----
+{
+  const events: TEvent[] = [{ id: 'a', name: 'A' }, { id: 'b', name: 'B' }]
+  const cs: Constraint[] = [
+    { id: 'c1', aId: 'a', bId: 'b', relation: 'earlier', min: 10, max: 20, enabled: true },
+  ]
+  const obs = [exactObs('oa', 'a', 0), exactObs('ob', 'b', 15)]
+  const r = queryOrdering(events, cs, obs, 0, 1, 15)!
+  assert(r.baseISO === ANCHOR_ISO, '问询：基准为最早观测起点')
+  assert(r.lower === 15 && r.upper === 15, '问询：两条精确观测把差钉为 15')
+  assert(r.verdict === 'necessary', '问询：观测钉死时 k=15 必然')
+  // 正例赋值：t0=A=0、B=+15（绝对偏移）
+  const pos = r.positive!.assignment
+  assert(pos.offsets[0] === 0 && pos.offsets[1] === 15, '问询：正例绝对偏移 A=0、B=+15')
+  assert(pos.relativeToA[0] === 0 && pos.relativeToA[1] === 15, '问询：相对 A 归一一致')
+  const r16 = queryOrdering(events, cs, obs, 0, 1, 16)!
+  assert(r16.verdict === 'impossible', '问询：观测钉死时 k=16 不可能')
+}
+
+// ---- 先后关系问询：观测与未连通事件分量并存 ----
+{
+  const events: TEvent[] = [
+    { id: 'a', name: 'A' },
+    { id: 'b', name: 'B' },
+    { id: 'z', name: 'Z（孤立分量）' },
+  ]
+  const cs: Constraint[] = [
+    { id: 'c1', aId: 'a', bId: 'b', relation: 'earlier', min: 10, max: 20, enabled: true },
+  ]
+  const obs = [exactObs('oa', 'a', 0)]
+  const r = queryOrdering(events, cs, obs, 0, 1, 10)!
+  assert(r.baseISO !== null, '问询：有观测即有基准')
+  assert(r.connected[0] && r.connected[1] && !r.connected[2], '问询：连通性标记正确')
+  const pos = r.positive!.assignment
+  assert(pos.offsets.length === 3, '问询：未连通事件也给出赋值')
+  // 孤立事件 Z 不受任何约束/观测限制：可行势为超级源点初值 0，
+  // 平移到 t0 基准后其绝对偏移自由（示例随势取 +10），面板标注无法定时、仅为可行示例
+  assert(pos.relativeToA[2] === 10, '问询：孤立事件分量可行势自由（示例取值）')
+}
+
+// ---- 先后关系问询：停用证词不接入（与“启用证词”口径一致）----
+{
+  const events: TEvent[] = [{ id: 'a', name: 'A' }, { id: 'b', name: 'B' }]
+  const cs: Constraint[] = [
+    { id: 'c1', aId: 'a', bId: 'b', relation: 'earlier', min: 10, max: 20, enabled: false },
+  ]
+  const r = queryOrdering(events, cs, [], 0, 1, 5)!
+  assert(r.lower === null && r.upper === null, '问询：停用证词不产生约束，区间无界')
+  assert(r.verdict === 'possible', '问询：停用证词不影响判定')
+}
+
+// ---- 先后关系问询：案卷矛盾时暂停（返回 null），即使修复预览可使其可满足 ----
+{
+  const bad = buildContradictionSample()
+  assert(queryOrdering(bad.events, bad.constraints, bad.observations, 0, 1, 5) === null, '问询：矛盾案卷返回 null')
+  assert(queryOrdering(bad.events, bad.constraints, [], 0, 1, 5) === null, '问询：去掉观测后纯相对矛盾同样暂停')
+}
+
+// ---- 先后关系问询：A=B / 越界下标防御性返回 null ----
+{
+  const events: TEvent[] = [{ id: 'a', name: 'A' }, { id: 'b', name: 'B' }]
+  assert(queryOrdering(events, [], [], 0, 0, 0) === null, '问询：A=B 返回 null')
+  assert(queryOrdering(events, [], [], 0, 5, 0) === null, '问询：越界下标返回 null')
+}
+
+// ---- 先后关系问询：不修改案卷数据（只读）----
+{
+  const s = buildConsistentSample()
+  const before = JSON.stringify(s)
+  queryOrdering(s.events, s.constraints, s.observations, 0, 1, 3)
+  queryOrdering(s.events, s.constraints, s.observations, 2, 4, 100)
+  assert(JSON.stringify(s) === before, '问询：不修改案卷数据')
 }
 
 console.log(`\n${passed} passed, ${failed} failed`)

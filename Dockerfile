@@ -1,26 +1,23 @@
-# ---------- 构建阶段 ----------
-FROM node:20-alpine AS build
+# 依赖准备与初始化均在「容器启动时」完成（见 docker-entrypoint.sh）：
+# 容器启动时先 npm ci 安装依赖、再 npm run build 完成生产构建（含 tsc 类型检查），
+# 随后由 vite preview 在容器内 8080 端口托管静态产物（自带 SPA 路由回退）。
+FROM node:20-alpine
+
 WORKDIR /app
 
-# 优先复制依赖清单，利用 Docker 层缓存
+# 复制依赖清单与全部源码（容器启动时据此安装依赖并构建）
 COPY package.json package-lock.json* ./
-RUN npm ci --no-audit --no-fund
-
-# 复制源码并构建（初始化/编译随镜像构建完成）
 COPY tsconfig.json vite.config.ts index.html ./
 COPY src ./src
-RUN npm run build
+# 容器启动初始化脚本：npm ci → npm run build → vite preview
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh
 
-# ---------- 运行阶段：nginx 托管静态产物 ----------
-FROM nginx:1.27-alpine AS runtime
-
-# 单页应用路由回退配置
-COPY nginx.conf /etc/nginx/conf.d/default.conf
-COPY --from=build /app/dist /usr/share/nginx/html
-
-EXPOSE 80
+# 浏览器入口固定为容器内 8080（compose 映射宿主机 8080 → 容器 8080）
+EXPOSE 8080
 
 HEALTHCHECK --interval=30s --timeout=3s --retries=3 \
-  CMD wget -qO- http://127.0.0.1:80/ >/dev/null 2>&1 || exit 1
+  CMD wget -qO- http://127.0.0.1:8080/ >/dev/null 2>&1 || exit 1
 
-CMD ["nginx", "-g", "daemon off;"]
+# 依赖安装与构建随容器启动执行；初始化完成后监听 8080
+ENTRYPOINT ["docker-entrypoint.sh"]
