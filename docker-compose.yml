@@ -1,3 +1,6 @@
+# 一条命令启动：docker compose up --build -d
+# 依赖准备（npm ci）与初始化（类型检查 + 生产构建）随镜像构建完成，
+# 容器启动即由 nginx 托管静态产物；浏览器入口 http://localhost:8080
 services:
   temporal-checker:
     build:
@@ -6,6 +9,6 @@ services:
     image: temporal-constraint-checker:latest
     container_name: temporal-constraint-checker
     ports:
-      # 宿主机端口:容器端口。如 8080 被占用，可修改左侧端口
+      # 宿主机端口:容器端口。如 8080 被占用，可修改左侧端口（如 "9090:80"）
       - "8080:80"
     restart: unless-stopped

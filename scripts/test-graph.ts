@@ -3,6 +3,7 @@ import { auditRedundancy } from '../src/lib/audit'
 import { DEFAULT_STATE_LIMIT, findMinimalRepairs, MAX_PLANS } from '../src/lib/repair'
 import { computeMinDeviationSchedule } from '../src/lib/schedule'
 import { computeUniformSlack, relaxConstraints } from '../src/lib/slack'
+import { querySequence } from '../src/lib/query'
 import { buildConsistentSample, buildContradictionSample, emptyState } from '../src/lib/samples'
 import { migrateState } from '../src/lib/storage'
 import { buildImportEntities, parseDsl } from '../src/lib/dsl'
@@ -1732,6 +1733,271 @@ function canon(v: unknown): string {
   computeUniformSlack(s.events, s.constraints, s.observations, 30)
   computeUniformSlack(s.events, s.constraints, s.observations, 5)
   assert(JSON.stringify(s) === before, '宽限：分析不修改案卷数据')
+}
+
+// ==================== 先后关系问询 ====================
+
+/** 由最紧区间推出的三分结论（与分支判定应一致） */
+function verdictFromInterval(dMin: number | null, dMax: number | null, k: number) {
+  if (dMax !== null && dMax < k) return 'impossible'
+  if (dMin !== null && dMin >= k) return 'necessary'
+  return 'possible'
+}
+
+/** 校验一份赋值（各事件相对 t0 的分钟偏移）满足全部启用证词与全部观测 */
+function checkAssignment(
+  label: string,
+  events: TEvent[],
+  constraints: Constraint[],
+  observations: TimeObservation[],
+  baseISO: string | null,
+  offsets: number[],
+) {
+  assert(offsets.length === events.length, `${label}：赋值覆盖全部事件`)
+  assert(offsets.every((v) => Number.isSafeInteger(v)), `${label}：赋值全部为整数分钟`)
+  const idx = new Map(events.map((e, i) => [e.id, i]))
+  for (const c of constraints) {
+    if (!c.enabled) continue
+    const ai = idx.get(c.aId)!
+    const bi = idx.get(c.bId)!
+    const d = c.relation === 'earlier' ? offsets[bi] - offsets[ai] : offsets[ai] - offsets[bi]
+    assert(d >= c.min && d <= c.max, `${label}：赋值满足证词 ${c.id}（d=${d} ∈ [${c.min},${c.max}]）`)
+  }
+  if (baseISO !== null) {
+    const baseMs = new Date(baseISO).getTime()
+    for (const o of observations) {
+      const i = idx.get(o.eventId)
+      if (i === undefined) continue
+      const t = baseMs + offsets[i] * 60_000
+      assert(
+        t >= new Date(o.start).getTime() && t <= new Date(o.end).getTime(),
+        `${label}：赋值满足观测 ${o.id}`,
+      )
+    }
+  }
+}
+
+// ---- 基本三分结论：Y 比 X 晚 10~20 分钟（无观测）----
+{
+  const events: TEvent[] = [{ id: 'x', name: 'X' }, { id: 'y', name: 'Y' }]
+  const cs: Constraint[] = [
+    { id: 'c1', aId: 'y', bId: 'x', relation: 'later', min: 10, max: 20, enabled: true },
+  ]
+  // k=10 → 必然成立（tY − tX ∈ [10,20]，否定 ≤9 不可行）
+  const r10 = querySequence(events, cs, [], 'x', 'y', 10)!
+  assert(r10 !== null, '问询：k=10 有结果')
+  assert(r10.dMin === 10 && r10.dMax === 20, `问询：最紧区间 [10,20]（实际 [${r10.dMin},${r10.dMax}]）`)
+  assert(r10.verdict === 'necessary', '问询：k=10 必然成立')
+  assert(r10.assertFeasible && !r10.negateFeasible, '问询：k=10 断言可行、否定不可行')
+  assert(r10.assertAssignment !== null && r10.negateAssignment === null, '问询：k=10 仅正例赋值')
+  assert(
+    r10.assertAssignment![1] - r10.assertAssignment![0] >= 10,
+    '问询：k=10 正例满足 tB − tA ≥ 10',
+  )
+  checkAssignment('问询 k=10 正例', events, cs, [], r10.baseISO, r10.assertAssignment!)
+  assert(r10.baseISO === null, '问询：无观测时基准为 null')
+
+  // k=15 → 可能但非必然（10 ≤ 14 且 20 ≥ 15）
+  const r15 = querySequence(events, cs, [], 'x', 'y', 15)!
+  assert(r15.verdict === 'possible', '问询：k=15 可能但非必然')
+  assert(r15.assertFeasible && r15.negateFeasible, '问询：k=15 两分支都可行')
+  assert(r15.assertAssignment !== null && r15.negateAssignment !== null, '问询：k=15 正例与反例同时给出')
+  const dPos = r15.assertAssignment![1] - r15.assertAssignment![0]
+  const dNeg = r15.negateAssignment![1] - r15.negateAssignment![0]
+  assert(dPos >= 15, `问询：k=15 正例满足 ≥ 15（实际 ${dPos}）`)
+  assert(dNeg <= 14, `问询：k=15 反例满足 ≤ 14（实际 ${dNeg}）`)
+  checkAssignment('问询 k=15 正例', events, cs, [], r15.baseISO, r15.assertAssignment!)
+  checkAssignment('问询 k=15 反例', events, cs, [], r15.baseISO, r15.negateAssignment!)
+
+  // k=21 → 不可能成立（最紧上界 20 < 21）
+  const r21 = querySequence(events, cs, [], 'x', 'y', 21)!
+  assert(r21.verdict === 'impossible', '问询：k=21 不可能成立')
+  assert(!r21.assertFeasible && r21.negateFeasible, '问询：k=21 断言不可行、否定可行')
+  assert(r21.assertAssignment === null && r21.negateAssignment !== null, '问询：k=21 仅反例赋值')
+  assert(
+    r21.negateAssignment![1] - r21.negateAssignment![0] <= 20,
+    '问询：k=21 反例满足 tB − tA ≤ 20',
+  )
+  checkAssignment('问询 k=21 反例', events, cs, [], r21.baseISO, r21.negateAssignment!)
+
+  // 区间与结论一致性（全 k 扫描）
+  for (let k = 0; k <= 25; k++) {
+    const r = querySequence(events, cs, [], 'x', 'y', k)!
+    assert(r.verdict === verdictFromInterval(r.dMin, r.dMax, k), `问询：k=${k} 区间与结论一致`)
+    assert(r.assertFeasible === (r.dMax === null || r.dMax >= k), `问询：k=${k} 断言可行性 ↔ 上界`)
+    assert(r.negateFeasible === (r.dMin === null || r.dMin <= k - 1), `问询：k=${k} 否定可行性 ↔ 下界`)
+  }
+}
+
+// ---- 负区间：X 比 Y 晚 5~10 分钟 ⇒ tY − tX ∈ [−10,−5] ----
+{
+  const events: TEvent[] = [{ id: 'x', name: 'X' }, { id: 'y', name: 'Y' }]
+  const cs: Constraint[] = [
+    { id: 'c1', aId: 'x', bId: 'y', relation: 'later', min: 5, max: 10, enabled: true },
+  ]
+  const r = querySequence(events, cs, [], 'x', 'y', 0)!
+  assert(r.dMin === -10 && r.dMax === -5, `问询：最紧区间允许负数 [−10,−5]（实际 [${r.dMin},${r.dMax}]）`)
+  assert(r.verdict === 'impossible', '问询：B 比 A 晚 ≥0 不可能（B 实际更早）')
+  const rx = querySequence(events, cs, [], 'y', 'x', 7)!
+  assert(rx.dMin === 5 && rx.dMax === 10, '问询：反向区间 [5,10]')
+  assert(rx.verdict === 'possible', '问询：反向 k=7 可能但非必然')
+  const rx9 = querySequence(events, cs, [], 'y', 'x', 5)!
+  assert(rx9.verdict === 'necessary', '问询：反向 k=5 必然成立')
+}
+
+// ---- 无界区间：A、B 之间没有任何约束通路 ----
+{
+  const events: TEvent[] = [{ id: 'x', name: 'X' }, { id: 'y', name: 'Y' }]
+  const r = querySequence(events, [], [], 'x', 'y', 0)!
+  assert(r.dMin === null && r.dMax === null, '问询：无通路时区间为 (−∞, +∞)')
+  assert(r.verdict === 'possible', '问询：无通路时 k=0 可能但非必然')
+  assert(r.assertAssignment !== null && r.negateAssignment !== null, '问询：无通路时正例反例都存在')
+  const dPos = r.assertAssignment![1] - r.assertAssignment![0]
+  const dNeg = r.negateAssignment![1] - r.negateAssignment![0]
+  assert(dPos >= 0 && dNeg <= -1, '问询：无通路时正例 ≥0、反例 ≤−1')
+}
+
+// ---- 单边无界：只有上界 ----
+{
+  const events: TEvent[] = [{ id: 'x', name: 'X' }, { id: 'y', name: 'Y' }]
+  const cs: Constraint[] = [
+    { id: 'c1', aId: 'y', bId: 'x', relation: 'later', min: 0, max: 30, enabled: true },
+  ]
+  const r = querySequence(events, cs, [], 'x', 'y', 10)!
+  assert(r.dMin === 0 && r.dMax === 30, `问询：区间 [0,30]（实际 [${r.dMin},${r.dMax}]）`)
+  assert(r.verdict === 'possible', '问询：k=10 可能但非必然')
+  const r40 = querySequence(events, cs, [], 'x', 'y', 40)!
+  assert(r40.verdict === 'impossible', '问询：k=40 超出上界不可能')
+}
+
+// ---- 有观测：赋值满足全部观测与证词，且相对基准换算正确 ----
+{
+  const events: TEvent[] = [{ id: 'x', name: 'X' }, { id: 'y', name: 'Y' }]
+  const cs: Constraint[] = [
+    { id: 'c1', aId: 'y', bId: 'x', relation: 'later', min: 10, max: 20, enabled: true },
+  ]
+  const obs = [exactObs('ox', 'x', 0), { id: 'oy', eventId: 'y', start: isoPlus(15), end: isoPlus(25) }]
+  const r = querySequence(events, cs, obs, 'x', 'y', 17)!
+  assert(r.baseISO === isoPlus(0), '问询：基准 = 最早观测起点')
+  // X 钉在 0，Y ∈ [15,25]（观测）∩ [10,20]（证词）= [15,20]
+  assert(r.dMin === 15 && r.dMax === 20, `问询：观测与证词共同收紧区间 [15,20]（实际 [${r.dMin},${r.dMax}]）`)
+  assert(r.verdict === 'possible', '问询：k=17 可能但非必然')
+  checkAssignment('问询有观测正例', events, cs, obs, r.baseISO, r.assertAssignment!)
+  checkAssignment('问询有观测反例', events, cs, obs, r.baseISO, r.negateAssignment!)
+  const dNeg = r.negateAssignment![1] - r.negateAssignment![0]
+  assert(dNeg <= 16, `问询：反例 tB − tA ≤ 16（实际 ${dNeg}）`)
+  const r12 = querySequence(events, cs, obs, 'x', 'y', 12)!
+  assert(r12.verdict === 'necessary', '问询：k=12 ≤ 下界 15 → 必然成立')
+  // 观测钉死两端：k=30 必然、 k=31 不可能
+  const obs2 = [exactObs('o1', 'x', 0), exactObs('o2', 'y', 30)]
+  const rn = querySequence(events, [], obs2, 'x', 'y', 30)!
+  assert(rn.verdict === 'necessary' && rn.dMin === 30 && rn.dMax === 30, '问询：观测钉死时差 30 → k=30 必然')
+  checkAssignment('问询钉死正例', events, [], obs2, rn.baseISO, rn.assertAssignment!)
+  const ri = querySequence(events, [], obs2, 'x', 'y', 31)!
+  assert(ri.verdict === 'impossible', '问询：观测钉死时差 30 → k=31 不可能')
+}
+
+// ---- 内置可满足示例：恢复比告警晚 8~20（另有多条路径共同收紧）----
+{
+  const s = buildConsistentSample()
+  const idx = new Map(s.events.map((e, i) => [e.name, i]))
+  const alertId = s.events[idx.get('值班告警触发')!].id
+  const recId = s.events[idx.get('服务恢复')!].id
+  const r = querySequence(s.events, s.constraints, s.observations, alertId, recId, 15)!
+  assert(r.dMin === 10 && r.dMax === 20, `问询：示例区间 [10,20]（实际 [${r.dMin},${r.dMax}]）`)
+  assert(r.verdict === 'possible', '问询：示例 k=15 可能但非必然')
+  checkAssignment('示例正例', s.events, s.constraints, s.observations, r.baseISO, r.assertAssignment!)
+  checkAssignment('示例反例', s.events, s.constraints, s.observations, r.baseISO, r.negateAssignment!)
+  const r10 = querySequence(s.events, s.constraints, s.observations, alertId, recId, 10)!
+  assert(r10.verdict === 'necessary', '问询：示例 k=10（恰为下界）必然成立')
+  const r8 = querySequence(s.events, s.constraints, s.observations, alertId, recId, 8)!
+  assert(r8.verdict === 'necessary', '问询：示例 k=8 必然成立')
+  const r21 = querySequence(s.events, s.constraints, s.observations, alertId, recId, 21)!
+  assert(r21.verdict === 'impossible', '问询：示例 k=21 不可能成立')
+  // 未连通事件（媒体报道）与告警之间：区间无界
+  const pressId = s.events[idx.get('媒体报道')!].id
+  const rp = querySequence(s.events, s.constraints, s.observations, alertId, pressId, 0)!
+  assert(rp.dMin === null && rp.dMax === null, '问询：未连通事件区间无界')
+  assert(rp.verdict === 'possible', '问询：未连通事件 k=0 可能但非必然')
+  checkAssignment('未连通正例', s.events, s.constraints, s.observations, rp.baseISO, rp.assertAssignment!)
+}
+
+// ---- 案卷矛盾：问询暂停（返回 null）----
+{
+  const s = buildContradictionSample()
+  const a = s.events[0].id
+  const b = s.events[1].id
+  assert(querySequence(s.events, s.constraints, s.observations, a, b, 10) === null, '问询：案卷矛盾返回 null')
+}
+
+// ---- 非法输入：A=B、负 k、非整数 k、引用不存在事件 ----
+{
+  const events: TEvent[] = [{ id: 'x', name: 'X' }, { id: 'y', name: 'Y' }]
+  assert(querySequence(events, [], [], 'x', 'x', 0) === null, '问询：A=B 返回 null')
+  assert(querySequence(events, [], [], 'x', 'y', -1) === null, '问询：负 k 返回 null')
+  assert(querySequence(events, [], [], 'x', 'y', 1.5) === null, '问询：非整数 k 返回 null')
+  assert(querySequence(events, [], [], 'x', 'zzz', 0) === null, '问询：引用不存在事件返回 null')
+}
+
+// ---- 停用证词不参与问询 ----
+{
+  const events: TEvent[] = [{ id: 'x', name: 'X' }, { id: 'y', name: 'Y' }]
+  const cs: Constraint[] = [
+    { id: 'c1', aId: 'y', bId: 'x', relation: 'later', min: 10, max: 20, enabled: false },
+  ]
+  const r = querySequence(events, cs, [], 'x', 'y', 10)!
+  assert(r.dMin === null && r.dMax === null, '问询：停用证词不产生边（区间无界）')
+  assert(r.verdict === 'possible', '问询：停用证词后 k=10 可能但非必然')
+}
+
+// ---- k=0 边界与确定性 ----
+{
+  const events: TEvent[] = [{ id: 'x', name: 'X' }, { id: 'y', name: 'Y' }]
+  const cs: Constraint[] = [
+    { id: 'c1', aId: 'y', bId: 'x', relation: 'later', min: 0, max: 0, enabled: true },
+  ]
+  const r = querySequence(events, cs, [], 'x', 'y', 0)!
+  assert(r.dMin === 0 && r.dMax === 0 && r.verdict === 'necessary', '问询：k=0 且精确同时 → 必然成立')
+  const r1 = querySequence(events, cs, [], 'x', 'y', 1)!
+  assert(r1.verdict === 'impossible', '问询：精确同时时 k=1 不可能')
+  // 确定性：同一输入两次问询的赋值完全一致
+  const s = buildConsistentSample()
+  const idx = new Map(s.events.map((e, i) => [e.name, i]))
+  const alertId = s.events[idx.get('值班告警触发')!].id
+  const recId = s.events[idx.get('服务恢复')!].id
+  const q1 = querySequence(s.events, s.constraints, s.observations, alertId, recId, 10)!
+  const q2 = querySequence(s.events, s.constraints, s.observations, alertId, recId, 10)!
+  assert(
+    JSON.stringify(q1.assertAssignment) === JSON.stringify(q2.assertAssignment) &&
+      JSON.stringify(q1.negateAssignment) === JSON.stringify(q2.negateAssignment),
+    '问询：赋值确定性',
+  )
+}
+
+// ---- 无观测赋值的相对分钟语义：平移到 A=0 后仍满足全案卷 ----
+{
+  const events: TEvent[] = [{ id: 'x', name: 'X' }, { id: 'y', name: 'Y' }, { id: 'z', name: 'Z' }]
+  const cs: Constraint[] = [
+    { id: 'c1', aId: 'y', bId: 'x', relation: 'later', min: 10, max: 20, enabled: true },
+    { id: 'c2', aId: 'z', bId: 'y', relation: 'later', min: 5, max: 8, enabled: true },
+  ]
+  const r = querySequence(events, cs, [], 'x', 'z', 10)!
+  assert(r.baseISO === null, '问询：无观测基准为 null')
+  const shifted = r.assertAssignment!.map((v) => v - r.assertAssignment![r.aIdx])
+  assert(shifted[r.aIdx] === 0, '问询：相对分钟以 A=0 显示')
+  checkAssignment('平移后仍满足全案卷', events, cs, [], null, shifted)
+}
+
+// ---- 问询不修改案卷数据（只读）----
+{
+  const s = buildConsistentSample()
+  const before = JSON.stringify(s)
+  const idx = new Map(s.events.map((e, i) => [e.name, i]))
+  const alertId = s.events[idx.get('值班告警触发')!].id
+  const recId = s.events[idx.get('服务恢复')!].id
+  querySequence(s.events, s.constraints, s.observations, alertId, recId, 10)
+  querySequence(s.events, s.constraints, s.observations, recId, alertId, 0)
+  assert(JSON.stringify(s) === before, '问询：分析不修改案卷数据')
 }
 
 console.log(`\n${passed} passed, ${failed} failed`)

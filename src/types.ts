@@ -287,6 +287,48 @@ export interface SlackAnalysis {
   relaxedConstraints: Constraint[]
 }
 
+/** 先后关系问询的三分结论：必然成立 / 可能但非必然 / 不可能成立 */
+export type SequenceVerdict = 'necessary' | 'possible' | 'impossible'
+
+/**
+ * 先后关系问询结果（只读计算：不写入案卷或本地存储）。
+ * 查询「B 至少比 A 晚 k 分钟」（tB − tA ≥ k，k 为非负整数分钟，A ≠ B）。
+ * 在原案卷（全部事件 + 启用证词 + 全部观测，不采用修复预览的临时停用结果）的
+ * 统一差分系统上，分别把断言（tB − tA ≥ k）与其整数分钟否定（tB − tA ≤ k−1）
+ * 加入系统判定可行性：
+ * - 断言可行、否定不可行 → 必然成立；
+ * - 两者都可行 → 可能但非必然（同时给出正例与反例）；
+ * - 断言不可行 → 不可能成立。
+ * 每个可行分支附一份满足全案卷的全部事件时间赋值（可行势，确定性）。
+ */
+export interface SequenceQueryResult {
+  /** 事件 A 的下标 */
+  aIdx: number
+  /** 事件 B 的下标 */
+  bIdx: number
+  /** 查询的非负整数分钟 k */
+  k: number
+  /** tB − tA 的最紧下界（分钟，可为负）；下界不可达为 null（−∞） */
+  dMin: number | null
+  /** tB − tA 的最紧上界（分钟，可为负）；上界不可达为 null（+∞） */
+  dMax: number | null
+  /** 断言分支（tB − tA ≥ k 加入系统）是否可行 */
+  assertFeasible: boolean
+  /** 否定分支（tB − tA ≤ k−1 加入系统）是否可行 */
+  negateFeasible: boolean
+  /** 三分结论 */
+  verdict: SequenceVerdict
+  /**
+   * 断言分支可行时的一份全事件赋值：各事件相对时间原点 t0 的分钟偏移
+   * （有观测时换算为绝对时刻展示；无观测时按 A = 0 折算为相对分钟展示）；不可行为 null
+   */
+  assertAssignment: number[] | null
+  /** 否定分支可行时的一份全事件赋值（同 assertAssignment 的展示约定）；不可行为 null */
+  negateAssignment: number[] | null
+  /** 时间基准；无有效观测为 null（赋值按 A = 0 相对分钟展示） */
+  baseISO: string | null
+}
+
 /** 最小修复搜索结果 */
 export interface RepairSearchResult {
   /** 是否找到至少一个可满足修复方案 */

@@ -40,6 +40,13 @@ function formatDateTime(t: Date, withYear = false): string {
   return `${y}${pad(t.getMonth() + 1)}-${pad(t.getDate())} ${pad(t.getHours())}:${pad(t.getMinutes())}`
 }
 
+/** 时差边界的紧凑展示：无界为 −∞ / +∞，非零值带正负号（如 +12 / −5） */
+export function formatBound(v: number | null, side: 'min' | 'max'): string {
+  if (v === null) return side === 'min' ? '−∞' : '+∞'
+  if (v === 0) return '0'
+  return v > 0 ? `+${v}` : `−${Math.abs(v)}`
+}
+
 /** 约束的自然语言：事件 A 比事件 B 早/晚 x~y 分钟 */
 export function describeConstraint(
   c: { aId: string; bId: string; relation: 'earlier' | 'later'; min: number; max: number },

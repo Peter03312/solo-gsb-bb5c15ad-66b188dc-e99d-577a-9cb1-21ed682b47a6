@@ -13,9 +13,11 @@ import ObservationEditor from '../src/components/ObservationEditor'
 import AuditPanel from '../src/components/AuditPanel'
 import SnapshotPanel from '../src/components/SnapshotPanel'
 import SlackPanel, { SlackResultView } from '../src/components/SlackPanel'
+import SequenceQueryPanel, { QueryResultView } from '../src/components/SequenceQueryPanel'
 import { analyze, traceBound } from '../src/lib/graph'
 import { auditRedundancy } from '../src/lib/audit'
 import { computeUniformSlack } from '../src/lib/slack'
+import { querySequence } from '../src/lib/query'
 import { buildConsistentSample, buildContradictionSample } from '../src/lib/samples'
 
 let failed = 0
@@ -260,6 +262,80 @@ const slackNoObs = {
 }
 const slackNoObsHtml = renderToString(h(SlackResultView, { run: slackNoObs }))
 check(slackNoObsHtml, '无法定时', '宽限：无观测标注无法定时')
+
+// 6) 先后关系问询面板：App 内渲染输入区；结果视图覆盖三种结论与无观测形态
+check(appHtml, '先后关系问询', '先后关系问询')
+check(appHtml, '开始问询', '先后关系问询')
+check(appHtml, '至少比', '先后关系问询')
+check(appHtml, '不采用修复预览的临时停用结果', '先后关系问询：基于原案卷')
+
+// 面板独立渲染（可满足案卷：输入区可用）
+const qPanelHtml = renderToString(
+  h(SequenceQueryPanel, {
+    events: s0.events,
+    constraints: s0.constraints,
+    observations: s0.observations,
+    satisfiable: true,
+  }),
+)
+check(qPanelHtml, '先后关系问询', '问询面板')
+check(qPanelHtml, '事件 A', '问询面板')
+check(qPanelHtml, '事件 B', '问询面板')
+check(qPanelHtml, '开始问询', '问询面板')
+
+// 案卷矛盾：问询暂停
+const qPausedHtml = renderToString(
+  h(SequenceQueryPanel, {
+    events: bad.events,
+    constraints: bad.constraints,
+    observations: bad.observations,
+    satisfiable: false,
+  }),
+)
+check(qPausedHtml, '先后关系问询已暂停', '问询：矛盾暂停提示')
+
+// 结果视图构造：告警 → 恢复
+const qIdx = new Map(s0.events.map((e, i) => [e.name, i]))
+const qAlertId = s0.events[qIdx.get('值班告警触发')!].id
+const qRecId = s0.events[qIdx.get('服务恢复')!].id
+const mkRun = (k: number, obs = s0.observations) => ({
+  events: s0.events,
+  constraints: s0.constraints,
+  observations: obs,
+  aId: qAlertId,
+  bId: qRecId,
+  k,
+  result: querySequence(s0.events, s0.constraints, obs, qAlertId, qRecId, k)!,
+})
+
+// 可能但非必然（k=15）：同时给出正例与反例，绝对时间赋值
+const qPossibleHtml = renderToString(h(QueryResultView, { run: mkRun(15) }))
+check(qPossibleHtml, '可能但非必然', '问询结果：可能但非必然')
+check(qPossibleHtml, '最紧区间', '问询结果：最紧区间')
+check(qPossibleHtml, '[+10, +20] 分钟', '问询结果：区间数值')
+check(qPossibleHtml, '正例', '问询结果：正例')
+check(qPossibleHtml, '反例', '问询结果：反例')
+check(qPossibleHtml, '断言分支', '问询结果：断言分支')
+check(qPossibleHtml, '否定分支', '问询结果：否定分支')
+check(qPossibleHtml, '绝对时刻', '问询结果：有观测显示绝对时间')
+check(qPossibleHtml, '满足全案卷', '问询结果：赋值满足全案卷')
+check(qPossibleHtml, '仅为可行示例', '问询结果：可行示例标注')
+check(qPossibleHtml, '不写入案卷或浏览器本地存储', '问询结果：只读说明')
+
+// 必然成立（k=8）：只有正例，反例不存在
+const qNecessaryHtml = renderToString(h(QueryResultView, { run: mkRun(8) }))
+check(qNecessaryHtml, '必然成立', '问询结果：必然成立')
+check(qNecessaryHtml, '反例不存在', '问询结果：反例不存在')
+
+// 不可能成立（k=21）：只有反例，正例不存在
+const qImpossibleHtml = renderToString(h(QueryResultView, { run: mkRun(21) }))
+check(qImpossibleHtml, '不可能成立', '问询结果：不可能成立')
+check(qImpossibleHtml, '正例不存在', '问询结果：正例不存在')
+
+// 无观测：以 A = 0 显示相对分钟并标明仅为可行示例
+const qRelHtml = renderToString(h(QueryResultView, { run: mkRun(15, []) }))
+check(qRelHtml, '相对分钟（A = 0）', '问询结果：无观测相对分钟')
+check(qRelHtml, '以 A = 0 显示，仅为可行示例', '问询结果：相对分钟可行示例标注')
 
 if (failed > 0) process.exit(1)
 console.log('smoke ok')

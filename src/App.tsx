@@ -23,6 +23,7 @@ import SchedulePanel from './components/SchedulePanel'
 import SlackPanel from './components/SlackPanel'
 import BatchImportPanel from './components/BatchImportPanel'
 import SnapshotPanel from './components/SnapshotPanel'
+import SequenceQueryPanel from './components/SequenceQueryPanel'
 import type { DslImportEntities } from './lib/dsl'
 
 export default function App() {
@@ -598,6 +599,17 @@ export default function App() {
         <SlackPanel events={events} constraints={constraints} observations={observations} />
       </div>
 
+      {/* 先后关系问询（全宽）：基于原案卷（不采用修复预览的临时停用结果），
+          矛盾时暂停问询；只读计算，案卷或查询条件改变后清除旧结果 */}
+      <div style={{ marginTop: 16 }}>
+        <SequenceQueryPanel
+          events={events}
+          constraints={constraints}
+          observations={observations}
+          satisfiable={result.satisfiable}
+        />
+      </div>
+
       <div className="footer-note">
         事件、约束、观测、期望时刻与优先级均自动保存在浏览器 localStorage，刷新不丢失 ·
         旧版单一锚点存档会自动迁移为一条精确观测 ·
@@ -606,7 +618,8 @@ export default function App() {
         批量证词导入先解析为只读预览，任何一行有错都禁止写入，确认后一次性合并（不覆盖现有数据）·
         案卷快照可导出为带格式版本的 JSON，导入时先完整校验、任一错误禁止应用，确认后整包替换当前案卷 ·
         冗余证词审计实时重算且只读，不改写约束与本地存档 ·
-        统一宽限分析按需手动触发、结果只读，案卷或上限 M 改变后自动清除
+        统一宽限分析按需手动触发、结果只读，案卷或上限 M 改变后自动清除 ·
+        先后关系问询基于原案卷（不含修复预览的临时停用），按需手动触发、结果只读，案卷或查询条件改变后自动清除
       </div>
     </div>
   )

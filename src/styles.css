@@ -1335,6 +1335,103 @@ table.windows tr.traced td {
   font-size: 12px;
 }
 
+/* ---------- 先后关系问询 ---------- */
+.query-panel {
+  border-color: rgba(188, 140, 255, 0.35);
+}
+.query-panel .slack-input-row select {
+  max-width: 200px;
+}
+.query-paused {
+  margin-top: 10px;
+}
+.query-base {
+  margin-top: 10px;
+  color: var(--text-muted);
+  font-size: 12.5px;
+  font-family: var(--mono);
+}
+.query-result {
+  margin-top: 10px;
+  border-top: 1px dashed var(--border);
+  padding-top: 10px;
+}
+.query-interval {
+  font-size: 13px;
+  color: var(--text-dim);
+  line-height: 1.7;
+  margin-bottom: 8px;
+}
+.query-interval code {
+  font-family: var(--mono);
+  color: var(--accent);
+  font-size: 12.5px;
+  margin-left: 6px;
+  white-space: nowrap;
+}
+.query-branch {
+  margin-top: 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px 12px;
+  background: var(--bg-panel-2);
+}
+.query-branch-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 13px;
+  margin-bottom: 4px;
+}
+.query-branch-d {
+  color: var(--text-muted);
+  font-size: 12.5px;
+  font-family: var(--mono);
+}
+.query-branch-note {
+  color: var(--text-muted);
+  font-size: 12.5px;
+  line-height: 1.6;
+  margin-bottom: 6px;
+}
+.query-branch-infeasible {
+  margin-top: 10px;
+  color: var(--text-muted);
+  font-size: 12.5px;
+  border: 1px dashed var(--border-strong);
+  border-radius: 6px;
+  padding: 7px 12px;
+}
+.badge.query-assert {
+  background: var(--ok-bg);
+  color: var(--ok);
+  border: 1px solid rgba(63, 185, 80, 0.6);
+}
+.badge.query-negate {
+  background: var(--warn-bg);
+  color: var(--warn);
+  border: 1px solid rgba(210, 153, 34, 0.6);
+}
+.badge.query-role {
+  background: var(--accent-dim);
+  color: #8fc6ff;
+  border: 1px solid var(--accent);
+  margin-left: 6px;
+}
+table.windows.query-assign {
+  font-size: 12.5px;
+}
+table.windows.query-assign th,
+table.windows.query-assign td {
+  padding: 5px 8px;
+}
+.query-readonly {
+  margin-top: 10px;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+
 /* ---------- 案卷快照 ---------- */
 .snapshot-panel .snapshot-row {
   display: flex;
